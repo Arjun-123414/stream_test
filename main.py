@@ -1778,36 +1778,19 @@ def main_app():
 
         # Check row count to determine display method
         num_rows = len(df)
-        
+
         if num_rows <= 200000:
-            st.set_page_config(layout="wide")  # Optional but helpful for wide views
-        
-            # Build grid options
+            # For tables under the threshold, show interactive AgGrid
             gb = GridOptionsBuilder.from_dataframe(df)
-            gb.configure_default_column(
-                filter=True,
-                sortable=True,
-                resizable=True,
-                minWidth=120  # Important for enabling horizontal scroll
-            )
-        
-            # Optional enhancements
-            # gb.configure_side_bar()  # Enables column selection/filter sidebar
-            # gb.configure_selection('multiple')  # Enable row selections
-        
-            gb.configure_grid_options(domLayout='normal')  # Prevents autoHeight
-        
+            gb.configure_default_column(filter=True, sortable=True)
             gridOptions = gb.build()
-        
             AgGrid(
                 df,
                 gridOptions=gridOptions,
-                height=500,  # Set fixed height to prevent auto height stretch
+                height=400,
                 width='100%',
-                key=f"grid_{message_index}_{df_idx}_{id(df)}",
-                update_mode=GridUpdateMode.VALUE_CHANGED,
-                fit_columns_on_grid_load=False,  # Crucial: disables fit-to-screen
-                allow_unsafe_jscode=True
+                key=f"grid_{message_index}_{df_idx}_{id(df)}",  # Unique key
+                update_mode=GridUpdateMode.VALUE_CHANGED
             )
 
     # Display the chat history in proper order, with tables integrated
