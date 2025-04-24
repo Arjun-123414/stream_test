@@ -6,7 +6,7 @@ snowflake-sqlalchemy
 pandas
 streamlit
 groq
-streamlit-aggrid==0.3.4
+streamlit-aggrid==1.1.2
 sqlglot
 fuzzywuzzy
 pyarrow
