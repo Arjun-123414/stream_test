@@ -1698,8 +1698,24 @@ def main_app():
                                                     • 'Payment'
                                            - For any filter, generate the SQL WHERE clause as:
                                              WHERE <field_expression> = '<user_input>'
-                                    
-                                    
+                             ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------       
+                                **2.7  JOB TABLE:**    
+                                If the user asks about job progress, outcome, or phase, apply filtering using the JOB_STAGE column.
+                                Use this logic:
+                                WHERE "JOB_STAGE" = '<Relevant Stage>'  -- or IN (...) for multiple stages
+                                🎯 Valid JOB_STAGE values & Meaningful Intent Mapping:
+                                User Intent Phrase (Natural Language) |	Snowflake WHERE Clause
+                                Currently active jobs / in progress   |	WHERE JOB_STAGE NOT IN ('Work Complete', 'Work Completed', 'Billing Complete', 'Closed', 'Lost', 'Won')
+                                Jobs completed / work completed       |	WHERE JOB_STAGE IN ('Work Complete', 'Work Completed')
+                                Jobs won	                          | WHERE JOB_STAGE = 'Won'
+                                Jobs lost	                          | WHERE JOB_STAGE = 'Lost'
+                                Billing complete	                  | WHERE JOB_STAGE = 'Billing Complete'
+                                Still under estimation / under review |	WHERE JOB_STAGE = 'Estimating/Review'
+                                In qualification	                  | WHERE JOB_STAGE = 'Qualification'
+                                Fully closed projects	              | WHERE JOB_STAGE = 'Closed'
+                                 
+                                            
+                                 
                             --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
                             **3.USER ROLE INFORMATION:**
                                **3.1 User Information**
