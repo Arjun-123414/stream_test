@@ -912,7 +912,7 @@ def main_app():
             db_session.close()
 
     with st.sidebar:
-        logo = Image.open("logo4.png")  # Your logo file
+        logo = Image.open("4Logo.png")  # Your logo file
         st.image(logo, width=400)
         st.markdown("## Your Chat History")
 
