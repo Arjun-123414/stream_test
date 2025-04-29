@@ -494,11 +494,12 @@ def save_after_exchange():
     st.session_state.last_save_time = time.time()
     st.session_state.last_saved_message_count = len(st.session_state.chat_history)
 
-
+MAX_ROWS_TO_PERSIST = 100000
 # --- MODIFIED save_chat_session_to_db ---
 def save_chat_session_to_db(user, messages, persistent_dfs):
     """Save the current conversation to DB, storing DataFrames as CSV files.
-       Avoid duplicate titles by checking for an existing chat session.
+    Avoid duplicate titles by checking for an existing chat session.
+    Skip saving very large tables to save storage space.
     """
     if not messages:
         return
@@ -511,7 +512,19 @@ def save_chat_session_to_db(user, messages, persistent_dfs):
         title = "New Chat (" + datetime.datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S') + ")"
 
     df_file_paths = []
+    # Create a new mapping that tracks which tables were too large to save
+    large_tables = []
+
     for i, df in enumerate(persistent_dfs):
+        # Check if the table is too large to save
+        if len(df) > MAX_ROWS_TO_PERSIST:
+            # Don't save this table, just record its index
+            large_tables.append(i)
+            # Add a placeholder path (empty string)
+            df_file_paths.append("")
+            continue
+
+        # Save smaller tables as normal
         filename = f"{user}_{datetime.datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex}_{i}.csv"
         file_path = os.path.join(PERSISTENT_DF_FOLDER, filename)
         df.to_csv(file_path, index=False)
@@ -519,6 +532,9 @@ def save_chat_session_to_db(user, messages, persistent_dfs):
 
     messages_json = json.dumps(messages)
     df_paths_json = json.dumps(df_file_paths)
+
+    # Store which tables were too large to save
+    large_tables_json = json.dumps(large_tables)
 
     # Store the mapping between messages and tables
     df_mappings_json = json.dumps(st.session_state.chat_message_tables)
@@ -535,8 +551,11 @@ def save_chat_session_to_db(user, messages, persistent_dfs):
                 existing_chat.messages = messages_json
                 existing_chat.persistent_df_paths = df_paths_json
                 existing_chat.persistent_df_mappings = df_mappings_json
+                # Add large tables info to existing chat
+                existing_chat.large_tables = large_tables_json
                 db_session.commit()
                 return
+
         # Create new chat record if no existing one
         chat_record = ChatHistory(
             user=user,
@@ -544,7 +563,8 @@ def save_chat_session_to_db(user, messages, persistent_dfs):
             timestamp=datetime.datetime.now(timezone.utc),
             messages=messages_json,
             persistent_df_paths=df_paths_json,
-            persistent_df_mappings=df_mappings_json
+            persistent_df_mappings=df_mappings_json,
+            large_tables=large_tables_json  # Add the large tables info
         )
         db_session.add(chat_record)
         db_session.commit()
@@ -557,6 +577,7 @@ def save_chat_session_to_db(user, messages, persistent_dfs):
         db_session.close()
 
 
+# Update the load_chat_sessions_for_user function to include large_tables info
 def load_chat_sessions_for_user(user_email):
     """Return a list of all conversation dicts for this user."""
     db_session = SessionLocal()
@@ -570,7 +591,8 @@ def load_chat_sessions_for_user(user_email):
                 "title": s.title,
                 "timestamp": s.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
                 "messages": json.loads(s.messages),
-                "persistent_df_paths": json.loads(s.persistent_df_paths)
+                "persistent_df_paths": json.loads(s.persistent_df_paths),
+                "large_tables": json.loads(s.large_tables) if hasattr(s, 'large_tables') and s.large_tables else []
             })
     except Exception as e:
         print(f"Error loading chat sessions: {e}")
@@ -579,7 +601,7 @@ def load_chat_sessions_for_user(user_email):
     return sessions
 
 
-# --- MODIFIED load_conversation_into_session ---
+# Update the load_conversation_into_session function
 def load_conversation_into_session(conversation):
     """Load the chosen conversation into session_state so user can continue."""
     # Load the full conversation for context (used for generating responses)
@@ -588,11 +610,31 @@ def load_conversation_into_session(conversation):
     st.session_state.chat_history = [msg for msg in conversation["messages"] if msg["role"] != "system"]
 
     loaded_dfs = []
-    for path in conversation["persistent_df_paths"]:
-        try:
-            loaded_dfs.append(pd.read_csv(path))
-        except Exception as e:
-            st.error(f"Error loading DataFrame from {path}: {e}")
+    # Get the list of tables that were too large to save
+    large_tables = conversation.get("large_tables", [])
+
+    # Load available dataframes
+    for i, path in enumerate(conversation["persistent_df_paths"]):
+        # Check if this was a large table that wasn't saved
+        if i in large_tables or not path:
+            # Create a placeholder DataFrame with a message
+            placeholder_df = pd.DataFrame({
+                "Notice": ["This large table (100,000+ rows) was not saved to preserve storage space."],
+                "Action": ["You can run the query again to view the full results."]
+            })
+            loaded_dfs.append(placeholder_df)
+        else:
+            # Load normal dataframe
+            try:
+                loaded_dfs.append(pd.read_csv(path))
+            except Exception as e:
+                st.error(f"Error loading DataFrame from {path}: {e}")
+                # Add a placeholder for the failed load
+                placeholder_df = pd.DataFrame({
+                    "Error": [f"Could not load table: {e}"]
+                })
+                loaded_dfs.append(placeholder_df)
+
     st.session_state.persistent_dfs = loaded_dfs
 
     # Reset the chat_message_tables mapping
@@ -1231,7 +1273,46 @@ def main_app():
                                     GROUP BY ITEM_DESC
                                     ORDER BY total_profit DESC
                                     LIMIT 10;
-   
+                                ** 1.9 Multi-Table Join Templates **
+                                      1. Payment Status on PO (Purchase Order)
+                                        **When to use:**
+                                        When the user asks about the payment status related to a specific Purchase Order (PO).
+                                        **Query Template**
+                                        SELECT
+                                          a.CLOSED_DATE        AS PAYMENT_DATE,
+                                          a.INVOICE_AMOUNT,
+                                          a.PAID_AMOUNT,
+                                          a.PAYM_MODE          AS PAYMENT_MODE,
+                                          a.JOURNAL_NUM,
+                                          a.VOUCHER
+                                        FROM po_details_view p
+                                        LEFT JOIN ap_invoice_paid_view a
+                                          ON a.INVOICE_NO = p.LATEST_INVOICE
+                                        WHERE p."Purchase_Order" = '<PO_NUMBER>'
+                                        ORDER BY a.CLOSED_DATE;
+                                      **Note:** Replace <PO_NUMBER> dynamically based on user input.
+                                      
+                                      2.
+                                      **When to use:**
+                                      when the user asks  to provide details on vendor invoice '<INVOICE_NO>' or	what are the details on vendor invoice on '<INVOICE_NO>'
+                                      SELECT
+                                        aip.INVOICE_NO,
+                                        aip.INVOICE_DATE,
+                                        aip.INVOICE_AMOUNT AS Invoice_Total,
+                                        aip.PAYM_MODE AS Payment_Mode,
+                                        aip.ACCOUNT_NAME AS Vendor_Name,
+                                        pdv."Project_ID",
+                                        pdv."JOB_NAME" AS Project_Name
+                                    FROM 
+                                        ap_invoice_paid_view aip
+                                    LEFT JOIN 
+                                        po_details_view pdv
+                                        ON aip.INVOICE_NO = pdv."LATEST_INVOICE"
+                                        AND aip.ACCOUNT_NUM = pdv."Vendor"
+                                    WHERE 
+                                        aip.INVOICE_NO = '<INVOICE_NO>';
+                                    **Note:** Replace '<INVOICE_NO>' dynamically based on user input. 
+
                             ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
                             **2. TABLE-SPECIFIC RULES**
 
@@ -1776,12 +1857,22 @@ def main_app():
         Display table with appropriate handling based on row size:
         - For tables > 100,000 rows: Show only download button
         - For tables <= 100,000 rows: Show download button + AgGrid table
+        - For placeholder tables (unsaved large tables): Show a message
 
         Parameters:
         - df: pandas DataFrame to display
         - message_index: Current message index for unique key generation
         - df_idx: DataFrame index in persistent store
         """
+        # Check if this is a placeholder for a large table that wasn't saved
+        if (len(df) == 1 and
+                "Notice" in df.columns and
+                "large table" in str(df["Notice"].iloc[0])):
+            # This is a placeholder for a table that was too large to save
+            st.warning(
+                "⚠️ This large table (100,000+ rows) was not saved to preserve storage space. You can run the query again to view the full results.")
+            return
+
         # Always provide download option regardless of size
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -1794,6 +1885,11 @@ def main_app():
 
         # Check row count to determine display method
         num_rows = len(df)
+
+        # Add persistence information if this is a large table
+        if num_rows > MAX_ROWS_TO_PERSIST:
+            st.info(
+                f"📝 Note: This table has {num_rows:,} rows and won't be saved when you navigate away. Download it now if you need to keep it.")
 
         if num_rows <= 200000:
             # For tables under the threshold, show interactive AgGrid
@@ -1861,6 +1957,31 @@ def main_app():
         cleaned = re.sub(r',(?=\S)', ', ', cleaned)
         cleaned = re.sub(r'\s{2,}', ' ', cleaned)
         return cleaned.strip()
+
+    def format_llm_response(text: str) -> str:
+        """
+        Formats LLM responses into clean HTML using preferred font and bold keys.
+        Handles all 'Key: Value' lines dynamically.
+        """
+        import html
+
+        lines = text.strip().split('\n')
+        formatted_lines = []
+
+        for line in lines:
+            if ':' in line:
+                key, value = line.split(':', 1)
+                formatted_lines.append(
+                    f"<div><strong>{html.escape(key.strip())}:</strong> {html.escape(value.strip())}</div>")
+            else:
+                formatted_lines.append(f"<div>{html.escape(line.strip())}</div>")
+
+        html_output = f"""
+        <div style="font-family: Arial, sans-serif; font-size: 16px; color: #333; line-height: 1.6; padding: 8px 0;">
+            {''.join(formatted_lines)}
+        </div>
+        """
+        return html_output
 
     if prompt := st.chat_input("Ask about your Snowflake data..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -1976,6 +2097,8 @@ def main_app():
                     # Customize message based on row count
                     if num_rows > 200000:
                         natural_response = f"Query returned {num_rows:,} rows. Due to the large size of the result, only a download option is provided below. You can download the full dataset as a CSV file for viewing in your preferred spreadsheet application."
+                    elif num_rows > MAX_ROWS_TO_PERSIST:
+                        natural_response = f"Query returned {num_rows:,} rows. The result is displayed below. Note: Due to the large size, this table won't be saved when you navigate away from this chat."
                     else:
                         natural_response = f"Query returned {num_rows:,} rows. The result is displayed below:"
 
@@ -2033,6 +2156,7 @@ def main_app():
                     natural_response, token_usage_second_call = get_groq_response_with_system(temp_messages)
                     st.session_state.total_tokens += token_usage_second_call
                     natural_response = clean_llm_response(natural_response)
+
                     with progress_container:
                         status_text.markdown(
                             "<div style='color:#3366ff; font-weight:bold;'>✨ Formatting results for display...</div>",
@@ -2080,10 +2204,8 @@ def main_app():
             # Show final answer in the response container
             with response_container:
                 with st.chat_message("assistant"):
-                    st.markdown(
-                        f"<div style='font-family:Arial, sans-serif; font-size:16px; color:#333; line-height:1.6;'>{natural_response}</div>",
-                        unsafe_allow_html=True
-                    )
+                    formatted_html = format_llm_response(natural_response)
+                    st.markdown(formatted_html, unsafe_allow_html=True)
 
                     current_message_idx = len(
                         [m for m in st.session_state.chat_history if m["role"] == "assistant"]
